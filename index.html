@@ -1,0 +1,550 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THE LAST SHIFT</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0; overflow: hidden; background: #000;
+  color: #e8e8e8; font-family: Consolas, monospace;
+}
+canvas { display: block; }
+#hud {
+  position: fixed; inset: 0; pointer-events: none;
+  text-shadow: 0 0 8px #000;
+}
+#top {
+  position: absolute; top: 22px; left: 24px;
+  font-size: 15px; line-height: 1.8;
+}
+#objective { color: #9ed9ff; }
+#crosshair {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%,-50%); color: #ddd;
+  font-size: 22px;
+}
+#bottom {
+  position: absolute; bottom: 24px; left: 50%;
+  transform: translateX(-50%); text-align: center;
+  color: #aaa; font-size: 12px;
+}
+#message {
+  position: absolute; top: 68%; left: 50%;
+  transform: translateX(-50%); color: #fff;
+  font-size: 14px; text-align: center;
+}
+#overlay {
+  position: fixed; inset: 0; display: flex;
+  align-items: center; justify-content: center;
+  background: radial-gradient(ellipse, #151b20 0%, #020304 75%);
+  z-index: 5; text-align: center; padding: 24px;
+}
+.panel { max-width: 600px; }
+h1 {
+  color: #d9e3e9; font-size: clamp(34px, 7vw, 68px);
+  letter-spacing: 8px; margin: 0 0 10px;
+  text-shadow: 0 0 25px #647f90;
+}
+.subtitle { color: #8197a3; letter-spacing: 4px; }
+p { line-height: 1.8; color: #b5bec4; }
+button {
+  background: #dce6eb; color: #080b0d; border: 0;
+  padding: 15px 30px; margin-top: 18px;
+  font-family: inherit; font-weight: bold;
+  letter-spacing: 2px; cursor: pointer;
+}
+button:hover { background: white; }
+#bar {
+  position: absolute; bottom: 58px; left: 50%;
+  transform: translateX(-50%); width: 160px;
+  height: 5px; background: #333;
+}
+#stamina {
+  height: 100%; width: 100%; background: #b8d8e7;
+}
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <div id="top">
+    <div>FACILITY 09 // NIGHT SHIFT</div>
+    <div id="objective">KEYCARDS: 0 / 3</div>
+    <div id="status">FLASHLIGHT: ON</div>
+  </div>
+  <div id="crosshair">+</div>
+  <div id="message"></div>
+  <div id="bar"><div id="stamina"></div></div>
+  <div id="bottom">WASD MOVE · MOUSE LOOK · SHIFT SPRINT · F FLASHLIGHT · E INTERACT</div>
+</div>
+
+<div id="overlay">
+  <div class="panel">
+    <h1 id="title">THE LAST SHIFT</h1>
+    <div class="subtitle">FACILITY 09 // 03:17 AM</div>
+    <p id="intro">
+      The emergency lights have failed.<br>
+      Something is moving inside the facility.<br><br>
+      Find all three keycards. Reach the exit.<br>
+      Whatever you hear behind you... keep moving.
+    </p>
+    <p>WASD to move · Mouse to look · Shift to sprint<br>
+       F to toggle flashlight · E near the exit</p>
+    <button id="start">BEGIN NIGHT SHIFT</button>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from
+  'https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x020407);
+scene.fog = new THREE.FogExp2(0x020407, 0.045);
+
+const camera = new THREE.PerspectiveCamera(
+  75, innerWidth / innerHeight, 0.1, 100
+);
+camera.rotation.order = 'YXZ';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.7));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+// Lighting
+scene.add(new THREE.AmbientLight(0x34404b, 0.22));
+
+const flashlight = new THREE.SpotLight(
+  0xd7e9ff, 100, 21, Math.PI / 6, 0.45, 1.4
+);
+flashlight.castShadow = true;
+flashlight.shadow.mapSize.set(512, 512);
+scene.add(flashlight);
+scene.add(flashlight.target);
+
+const redLight = new THREE.PointLight(0xff102b, 8, 8);
+redLight.position.set(0, 2.2, -10);
+scene.add(redLight);
+
+// Materials
+const wallMat = new THREE.MeshStandardMaterial({
+  color: 0x343b40, roughness: 0.95
+});
+const floorMat = new THREE.MeshStandardMaterial({
+  color: 0x171c20, roughness: 1
+});
+const ceilingMat = new THREE.MeshStandardMaterial({
+  color: 0x101519, roughness: 1
+});
+const darkMat = new THREE.MeshStandardMaterial({
+  color: 0x050708, roughness: 1
+});
+const keyMat = new THREE.MeshStandardMaterial({
+  color: 0x45caff, emissive: 0x0877bb, emissiveIntensity: 2
+});
+
+// Maze: # = wall, . = corridor, P = spawn, E = exit
+// Each tile is 4 units wide.
+const maze = [
+  "###############",
+  "#P....#.......#",
+  "###.#.#.###.#.#",
+  "#...#...#...#.#",
+  "#.#####.#.###.#",
+  "#.....#.#.....#",
+  "#.###.#.#####.#",
+  "#.#...#.....#.#",
+  "#.#.#####.#.#.#",
+  "#...#.....#...#",
+  "###.#.#######.#",
+  "#...#.....#...#",
+  "#.#######.#.###",
+  "#.........#...E",
+  "###############"
+];
+const tile = 4;
+const offset = (maze[0].length - 1) * tile / 2;
+
+function worldPos(col, row) {
+  return { x: col * tile - offset, z: row * tile - offset };
+}
+
+const walls = [];
+const wallGeo = new THREE.BoxGeometry(tile, 4, tile);
+const floorGeo = new THREE.BoxGeometry(tile, 0.2, tile);
+const ceilGeo = new THREE.BoxGeometry(tile, 0.2, tile);
+
+for (let r = 0; r < maze.length; r++) {
+  for (let c = 0; c < maze[r].length; c++) {
+    const p = worldPos(c, r);
+    const cell = maze[r][c];
+
+    const floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.position.set(p.x, -0.1, p.z);
+    scene.add(floor);
+
+    const ceiling = new THREE.Mesh(ceilGeo, ceilingMat);
+    ceiling.position.set(p.x, 4, p.z);
+    scene.add(ceiling);
+
+    if (cell === '#') {
+      const wall = new THREE.Mesh(wallGeo, wallMat);
+      wall.position.set(p.x, 2, p.z);
+      wall.castShadow = true;
+      wall.receiveShadow = true;
+      scene.add(wall);
+      walls.push({ x: p.x, z: p.z });
+    }
+
+    // Sparse emergency lights
+    if (cell !== '#' && (r * 7 + c * 3) % 11 === 0) {
+      const lamp = new THREE.PointLight(0x9b1825, 3, 6);
+      lamp.position.set(p.x, 3.5, p.z);
+      scene.add(lamp);
+
+      const bulb = new THREE.Mesh(
+        new THREE.BoxGeometry(0.8, 0.08, 0.25),
+        new THREE.MeshBasicMaterial({ color: 0x6d1720 })
+      );
+      bulb.position.set(p.x, 3.8, p.z);
+      scene.add(bulb);
+    }
+  }
+}
+
+// Decorative pipes along the walls
+for (let i = 0; i < 20; i++) {
+  const pipe = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.07, 0.07, 3.8, 8),
+    new THREE.MeshStandardMaterial({ color: 0x41494c, metalness: 0.6 })
+  );
+  pipe.rotation.z = Math.PI / 2;
+  pipe.position.set(-offset + 1.5, 2.9, -offset + i * 3.5);
+  scene.add(pipe);
+}
+
+// Player
+const spawn = worldPos(1, 1);
+const player = new THREE.Vector3(spawn.x, 1.65, spawn.z);
+camera.position.copy(player);
+
+let yaw = 0;
+let pitch = 0;
+let running = false;
+let gameOver = false;
+let won = false;
+let flashlightOn = true;
+let stamina = 100;
+let keysFound = 0;
+const pressed = {};
+const clock = new THREE.Clock();
+
+function isWall(x, z, radius = 0.65) {
+  for (const w of walls) {
+    if (Math.abs(x - w.x) < tile / 2 + radius &&
+        Math.abs(z - w.z) < tile / 2 + radius) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function moveWithCollision(position, dx, dz, radius = 0.65) {
+  if (!isWall(position.x + dx, position.z, radius))
+    position.x += dx;
+  if (!isWall(position.x, position.z + dz, radius))
+    position.z += dz;
+}
+
+// Keycards
+const keycards = [];
+const keyLocations = [[5,1], [11,5], [5,11]];
+
+for (const [c, r] of keyLocations) {
+  const p = worldPos(c, r);
+  const card = new THREE.Mesh(
+    new THREE.BoxGeometry(0.55, 0.08, 0.8), keyMat
+  );
+  card.position.set(p.x, 0.65, p.z);
+  card.rotation.y = Math.random() * 2;
+  scene.add(card);
+
+  const glow = new THREE.PointLight(0x29aaff, 2, 3);
+  glow.position.set(p.x, 0.9, p.z);
+  scene.add(glow);
+
+  keycards.push({ mesh: card, light: glow, taken: false });
+}
+
+// Exit
+const exitPos = worldPos(13, 13);
+const exit = new THREE.Group();
+exit.position.set(exitPos.x, 0, exitPos.z);
+
+const door = new THREE.Mesh(
+  new THREE.BoxGeometry(2.5, 3.3, 0.25),
+  new THREE.MeshStandardMaterial({
+    color: 0x202a2f, metalness: 0.65, roughness: 0.5,
+    emissive: 0x09131a
+  })
+);
+door.position.y = 1.65;
+exit.add(door);
+
+const exitLamp = new THREE.PointLight(0x26ff9a, 2, 7);
+exitLamp.position.set(0, 3, 0);
+exit.add(exitLamp);
+scene.add(exit);
+
+// Creature
+const monster = new THREE.Group();
+const skin = new THREE.MeshStandardMaterial({
+  color: 0x080a0b, roughness: 0.85
+});
+const body = new THREE.Mesh(
+  new THREE.CapsuleGeometry(0.48, 1.35, 5, 8), skin
+);
+body.position.y = 1.15;
+body.castShadow = true;
+monster.add(body);
+
+const head = new THREE.Mesh(
+  new THREE.SphereGeometry(0.38, 12, 10), skin
+);
+head.position.y = 2.2;
+monster.add(head);
+
+const eyeMat = new THREE.MeshBasicMaterial({ color: 0xff1429 });
+for (const x of [-0.14, 0.14]) {
+  const eye = new THREE.Mesh(
+    new THREE.SphereGeometry(0.055, 8, 8), eyeMat
+  );
+  eye.position.set(x, 2.25, -0.32);
+  monster.add(eye);
+}
+
+const startMonster = worldPos(11, 13);
+monster.position.set(startMonster.x, 0, startMonster.z);
+scene.add(monster);
+
+let monsterSpeed = 1.45;
+let messageTimer = 0;
+const hudMessage = document.getElementById('message');
+
+function showMessage(text, seconds = 2) {
+  hudMessage.textContent = text;
+  messageTimer = seconds;
+}
+
+// Controls
+const overlay = document.getElementById('overlay');
+
+document.getElementById('start').addEventListener('click', () => {
+  if (gameOver || won) location.reload();
+  overlay.classList.add('hidden');
+  renderer.domElement.requestPointerLock();
+});
+
+document.addEventListener('pointerlockchange', () => {
+  running = document.pointerLockElement === renderer.domElement;
+  if (!running && !gameOver && !won) {
+    overlay.classList.remove('hidden');
+    document.getElementById('title').textContent = 'PAUSED';
+    document.getElementById('intro').textContent =
+      'The facility is waiting. Click below to continue.';
+    document.getElementById('start').textContent = 'RESUME';
+  }
+});
+
+document.addEventListener('mousemove', e => {
+  if (!running) return;
+  yaw -= e.movementX * 0.002;
+  pitch -= e.movementY * 0.002;
+  pitch = THREE.MathUtils.clamp(pitch, -1.45, 1.45);
+});
+
+document.addEventListener('keydown', e => {
+  pressed[e.code] = true;
+
+  if (e.code === 'KeyF' && !e.repeat) {
+    flashlightOn = !flashlightOn;
+    flashlight.visible = flashlightOn;
+    document.getElementById('status').textContent =
+      'FLASHLIGHT: ' + (flashlightOn ? 'ON' : 'OFF');
+  }
+
+  if (e.code === 'KeyE' && !e.repeat && running) {
+    const d = Math.hypot(
+      player.x - exitPos.x, player.z - exitPos.z
+    );
+    if (d < 3.5) {
+      if (keysFound === 3) winGame();
+      else showMessage('EXIT LOCKED — FIND ALL 3 KEYCARDS', 3);
+    }
+  }
+});
+document.addEventListener('keyup', e => pressed[e.code] = false);
+
+// Win / lose
+function winGame() {
+  won = true;
+  running = false;
+  document.exitPointerLock();
+  overlay.classList.remove('hidden');
+  document.getElementById('title').textContent = 'YOU ESCAPED';
+  document.getElementById('intro').textContent =
+    'The door slams behind you. You made it out of Facility 09... ' +
+    'but something followed you to the parking lot.';
+  document.getElementById('start').textContent = 'PLAY AGAIN';
+}
+
+function loseGame() {
+  gameOver = true;
+  running = false;
+  document.exitPointerLock();
+  overlay.classList.remove('hidden');
+  document.getElementById('title').textContent = 'SHIFT TERMINATED';
+  document.getElementById('intro').textContent =
+    'The footsteps stop. The flashlight goes dark. ' +
+    'Nobody answers your radio.';
+  document.getElementById('start').textContent = 'TRY AGAIN';
+}
+
+// Main loop
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const time = clock.elapsedTime;
+
+  // Gentle flickering emergency light
+  redLight.intensity = 5 + Math.sin(time * 7) * 2.5;
+  exitLamp.intensity = 1.6 + Math.sin(time * 3) * 0.4;
+
+  // Animate keycards
+  for (const k of keycards) {
+    if (!k.taken) {
+      k.mesh.rotation.y += dt * 0.9;
+      k.mesh.position.y = 0.65 + Math.sin(time * 2.5) * 0.12;
+
+      if (player.distanceTo(k.mesh.position) < 1.6) {
+        k.taken = true;
+        scene.remove(k.mesh);
+        scene.remove(k.light);
+        keysFound++;
+        document.getElementById('objective').textContent =
+          `KEYCARDS: ${keysFound} / 3`;
+        showMessage('KEYCARD ACQUIRED', 2.5);
+      }
+    }
+  }
+
+  if (running && !gameOver && !won) {
+    const forward = new THREE.Vector3(
+      -Math.sin(yaw), 0, -Math.cos(yaw)
+    );
+    const right = new THREE.Vector3(
+      Math.cos(yaw), 0, -Math.sin(yaw)
+    );
+
+    let dx = 0, dz = 0;
+    if (pressed['KeyW']) { dx += forward.x; dz += forward.z; }
+    if (pressed['KeyS']) { dx -= forward.x; dz -= forward.z; }
+    if (pressed['KeyD']) { dx += right.x; dz += right.z; }
+    if (pressed['KeyA']) { dx -= right.x; dz -= right.z; }
+
+    const moving = Math.hypot(dx, dz) > 0;
+    if (moving) {
+      const length = Math.hypot(dx, dz);
+      dx /= length; dz /= length;
+    }
+
+    const sprinting = pressed['ShiftLeft'] || pressed['ShiftRight'];
+    const canSprint = sprinting && moving && stamina > 0;
+    const speed = canSprint ? 6.5 : 3.7;
+
+    if (canSprint) stamina = Math.max(0, stamina - 30 * dt);
+    else stamina = Math.min(100, stamina + 17 * dt);
+
+    document.getElementById('stamina').style.width = stamina + '%';
+
+    moveWithCollision(player, dx * speed * dt, dz * speed * dt);
+    player.y = 1.65 + (moving ? Math.sin(time * 10) * 0.035 : 0);
+    camera.position.copy(player);
+    camera.rotation.set(pitch, yaw, 0, 'YXZ');
+
+    // Flashlight follows the camera
+    flashlight.position.copy(camera.position);
+    flashlight.target.position.copy(camera.position).add(
+      forward.clone().applyAxisAngle(
+        new THREE.Vector3(0, 1, 0), 0
+      ).add(new THREE.Vector3(0, Math.sin(pitch), 0))
+    );
+
+    // Creature pursues the player
+    const toPlayer = new THREE.Vector3(
+      player.x - monster.position.x,
+      0,
+      player.z - monster.position.z
+    );
+    const distance = toPlayer.length();
+
+    if (distance > 0.001) {
+      toPlayer.normalize();
+      const chaseSpeed = distance < 11 ? 2.55 : monsterSpeed;
+      const mx = toPlayer.x * chaseSpeed * dt;
+      const mz = toPlayer.z * chaseSpeed * dt;
+
+      // Simple collision avoidance
+      const nextX = monster.position.x + mx;
+      const nextZ = monster.position.z + mz;
+      if (!isWall(nextX, monster.position.z, 0.55))
+        monster.position.x = nextX;
+      if (!isWall(monster.position.x, nextZ, 0.55))
+        monster.position.z = nextZ;
+
+      monster.rotation.y = Math.atan2(
+        player.x - monster.position.x,
+        player.z - monster.position.z
+      );
+    }
+
+    // The closer it gets, the more dangerous it feels
+    if (distance < 13) {
+      scene.fog.density = 0.045 + (13 - distance) * 0.002;
+    } else {
+      scene.fog.density = 0.045;
+    }
+
+    if (distance < 1.5) loseGame();
+
+    const exitDistance = Math.hypot(
+      player.x - exitPos.x, player.z - exitPos.z
+    );
+    if (exitDistance < 3.5 && keysFound === 3)
+      showMessage('PRESS E TO ESCAPE', 0.1);
+  }
+
+  if (messageTimer > 0) messageTimer -= dt;
+  else hudMessage.textContent = '';
+
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+animate();
+</script>
+</body>
+</html>
